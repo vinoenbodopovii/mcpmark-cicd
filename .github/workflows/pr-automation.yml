@@ -1,0 +1,242 @@
+name: Pull Request Automation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        id: eslint
+        run: |
+          npm run lint > eslint_report.txt 2>&1 || echo "ESLint found issues"
+          cat eslint_report.txt
+
+      - name: Run Prettier Check
+        id: prettier
+        run: |
+          npx prettier --check "src/**/*.js" > prettier_report.txt 2>&1 || echo "Prettier found issues"
+          cat prettier_report.txt
+
+      - name: Post Code Quality Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            let eslintOutput = '';
+            let prettierOutput = '';
+            try { eslintOutput = fs.readFileSync('eslint_report.txt', 'utf8'); } catch (e) { eslintOutput = 'No report'; }
+            try { prettierOutput = fs.readFileSync('prettier_report.txt', 'utf8'); } catch (e) { prettierOutput = 'No report'; }
+            
+            const body = `## Code Quality Report
+            
+            ### ESLint Results
+            \`\`\`
+            ${eslintOutput.slice(0, 1000)}
+            \`\`\`
+            
+            ### Prettier Results
+            \`\`\`
+            ${prettierOutput.slice(0, 1000)}
+            \`\`\`
+            `;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Tests and Coverage
+        id: test
+        run: |
+          npm run test:coverage > test_report.txt 2>&1 || echo "Tests failed"
+          cat test_report.txt
+
+      - name: Upload Coverage Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage/
+
+      - name: Post Test Coverage Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            let testOutput = '';
+            try { testOutput = fs.readFileSync('test_report.txt', 'utf8'); } catch (e) { testOutput = 'No report'; }
+            
+            const body = `## Test Coverage Report
+            
+            \`\`\`
+            ${testOutput.slice(0, 2000)}
+            \`\`\`
+            `;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Dependency Vulnerability Check
+        id: audit
+        run: |
+          npm audit > audit_report.txt 2>&1 || echo "Vulnerabilities found"
+          cat audit_report.txt
+
+      - name: Scan for Secrets
+        id: secrets
+        run: |
+          # Basic secret scan simulation
+          grep -rE "password|secret|key|token" src/ > secrets_report.txt 2>&1 || echo "No obvious secrets found"
+          cat secrets_report.txt
+
+      - name: Post Security Scan Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            let auditOutput = '';
+            let secretsOutput = '';
+            try { auditOutput = fs.readFileSync('audit_report.txt', 'utf8'); } catch (e) { auditOutput = 'No audit report'; }
+            try { secretsOutput = fs.readFileSync('secrets_report.txt', 'utf8'); } catch (e) { secretsOutput = 'No secrets report'; }
+            
+            const body = `## Security Scan Report
+            
+            ### Dependencies Vulnerabilities
+            \`\`\`
+            ${auditOutput.slice(0, 1000)}
+            \`\`\`
+            
+            ### Secrets Scan Results
+            \`\`\`
+            ${secretsOutput.slice(0, 1000)}
+            \`\`\`
+            `;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Application
+        run: npm run build
+
+      - name: Validate Endpoints
+        run: |
+          npm start &
+          PID=$!
+          sleep 10
+          curl -v http://localhost:3000/health > health_check.txt 2>&1 || echo "Health check failed"
+          kill $PID
+          cat health_check.txt
+
+      - name: Create Build Artifact
+        run: |
+          zip -r deployment-preview.zip src package.json
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-preview
+          path: deployment-preview.zip
+
+      - name: Post Build Validation Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            let healthOutput = '';
+            try { healthOutput = fs.readFileSync('health_check.txt', 'utf8'); } catch (e) { healthOutput = 'Health check failed or did not run'; }
+            
+            const body = `## Build Validation Report
+            
+            Build attempted.
+            
+            ### Health Check Output
+            \`\`\`
+            ${healthOutput}
+            \`\`\`
+            
+            Deployment preview artifact uploaded.
+            `;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
